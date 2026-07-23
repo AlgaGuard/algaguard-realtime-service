@@ -1,0 +1,25 @@
+export const committedEvent = {
+  schema: "urn:algaguard:schema:internal:telemetry-committed:v1" as const,
+  schemaVersion: "1.0.0" as const,
+  eventId: "30000000-0000-4000-8000-000000000001",
+  eventType: "telemetry.committed" as const,
+  occurredAt: "2026-07-23T00:00:02Z",
+  organizationId: "60000000-0000-4000-8000-000000000001",
+  deviceUuid: "20000000-0000-4000-8000-000000000001",
+  deviceId: "AG-000001",
+  ownershipVersion: "1",
+  batchId: "40000000-0000-4000-8000-000000000001",
+  firstSequence: "1",
+  lastSequence: "1",
+  sampleCount: 1,
+  payload: {
+    sample: {
+      sequence: "1",
+      observedAt: "2026-07-23T00:00:01Z",
+      timestampQuality: "NTP_SYNCED" as const,
+      uptimeMs: "1000",
+      values: { ph: 7 },
+    },
+  },
+  correlationId: "70000000-0000-4000-8000-000000000001",
+};

@@ -2,6 +2,7 @@ export type SubscriptionAuthorizer = (
   subjectId: string,
   resourceType: "organization" | "device" | "current-user",
   resourceId?: string,
+  events?: string[],
 ) => Promise<boolean>;
 let cachedToken: { value: string; expiresAt: number } | undefined;
 async function serviceToken(environment: NodeJS.ProcessEnv) {
@@ -36,7 +37,7 @@ export function createSubscriptionAuthorizer(
   environment: NodeJS.ProcessEnv = process.env,
 ): SubscriptionAuthorizer {
   const base = environment.ACCESS_SERVICE_URL ?? "http://access-service:3000";
-  return async (subjectId, resourceType, resourceId) => {
+  return async (subjectId, resourceType, resourceId, events) => {
     const response = await fetch(`${base}/v1/internal/authorizations/decide`, {
       method: "POST",
       headers: {
@@ -48,6 +49,7 @@ export function createSubscriptionAuthorizer(
         action: "subscription.read",
         resourceType,
         ...(resourceId ? { resourceId } : {}),
+        ...(events ? { eventTypes: events } : {}),
       }),
     });
     if (!response.ok)
