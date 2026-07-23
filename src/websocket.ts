@@ -102,17 +102,26 @@ export async function attachRealtimeServer(
     authorize: SubscriptionAuthorizer;
     metrics: RealtimeMetrics;
     redisUrl: string;
+    maxMessageBytes?: number;
+    maxSubscriptions?: number;
+    outboundQueueMaximum?: number;
+    connectionsPerMinute?: number;
+    messagesPerMinute?: number;
     heartbeatMs?: number;
     idleMs?: number;
+    backpressureBytes?: number;
+    preauthBufferMessages?: number;
   },
 ) {
   const wss = new WebSocketServer({
     server,
     path: "/realtime",
-    maxPayload: 256 * 1024,
+    maxPayload: dependencies.maxMessageBytes ?? 256 * 1024,
   });
   const clients = new Set<ClientContext>();
-  const limiter = new ConnectionLimiter();
+  const limiter = new ConnectionLimiter(
+    dependencies.connectionsPerMinute ?? 20,
+  );
   const subscriber = createClient({ url: dependencies.redisUrl });
   subscriber.on("reconnecting", () =>
     dependencies.metrics.add("redis_reconnects_total"),
@@ -121,7 +130,8 @@ export async function attachRealtimeServer(
 
   function enqueue(context: ClientContext, value: string) {
     if (
-      context.socket.bufferedAmount > 512 * 1024 ||
+      context.socket.bufferedAmount >
+        (dependencies.backpressureBytes ?? 512 * 1024) ||
       !context.queue.push(value)
     ) {
       dependencies.metrics.add("slow_client_closures_total");
@@ -161,7 +171,9 @@ export async function attachRealtimeServer(
   wss.on("connection", (socket, request) => {
     const bufferedMessages: RawData[] = [];
     const bufferMessage = (raw: RawData) => {
-      if (bufferedMessages.length >= 50) {
+      if (
+        bufferedMessages.length >= (dependencies.preauthBufferMessages ?? 50)
+      ) {
         socket.close(4429, "message rate limit");
         return;
       }
@@ -205,8 +217,11 @@ export async function attachRealtimeServer(
       };
       const context: ClientContext = {
         socket,
-        subscriptions: new SubscriptionStore(authorize, 50),
-        queue: new BoundedQueue(100),
+        subscriptions: new SubscriptionStore(
+          authorize,
+          dependencies.maxSubscriptions ?? 50,
+        ),
+        queue: new BoundedQueue(dependencies.outboundQueueMaximum ?? 100),
         alive: true,
         lastActivity: Date.now(),
         messages: 0,
@@ -227,7 +242,7 @@ export async function attachRealtimeServer(
             context.resetAt = now + 60_000;
           }
           context.messages += 1;
-          if (context.messages > 120)
+          if (context.messages > (dependencies.messagesPerMinute ?? 120))
             return socket.close(4429, "message rate limit");
           try {
             const value = JSON.parse(raw.toString()) as unknown;

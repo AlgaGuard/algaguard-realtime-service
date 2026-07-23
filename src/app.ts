@@ -38,10 +38,11 @@ export function buildApp(
   tickets: TicketRepository,
   metrics = new RealtimeMetrics(),
   authenticate?: Authenticator,
+  bodyLimitBytes = 32 * 1_024,
 ) {
   const app = express();
   app.disable("x-powered-by");
-  app.use(express.json({ limit: "32kb" }));
+  app.use(express.json({ limit: bodyLimitBytes }));
   app.use(requestContext);
   app.get("/health/live", (_request, response) =>
     response.json({ status: "UP", service: "algaguard-realtime-service" }),

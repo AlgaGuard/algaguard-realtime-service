@@ -50,6 +50,7 @@ test(
       authorize: async () => allowed,
       metrics,
       redisUrl: redisUrl!,
+      maxSubscriptions: 1,
       heartbeatMs: 50,
       idleMs: 2_000,
     });
@@ -75,6 +76,28 @@ test(
     const [ackBytes] = (await once(socket, "message")) as [Buffer];
     const ack = JSON.parse(ackBytes.toString()) as { accepted: unknown[] };
     assert.equal(ack.accepted.length, 1);
+
+    socket.send(
+      JSON.stringify({
+        schema: "algaguard.websocket.subscribe",
+        schemaVersion: "1.0.0",
+        requestId: "10000000-0000-4000-8000-000000000002",
+        subscriptions: [
+          {
+            resourceType: "organization",
+            resourceId: committedEvent.organizationId,
+            events: ["telemetry.updated"],
+          },
+        ],
+      }),
+    );
+    const [limitAckBytes] = (await once(socket, "message")) as [Buffer];
+    const limitAck = JSON.parse(limitAckBytes.toString()) as {
+      accepted: unknown[];
+      rejected: unknown[];
+    };
+    assert.equal(limitAck.accepted.length, 0);
+    assert.equal(limitAck.rejected.length, 1);
 
     const publisher = createClient({ url: redisUrl! });
     await publisher.connect();
