@@ -1,56 +1,139 @@
 import type { Server } from "node:http";
 import { createClient } from "redis";
 import { WebSocket, WebSocketServer } from "ws";
-import { BoundedQueue, SubscriptionStore } from "./domain.js";
-import { consumeTicket } from "./tickets.js";
+import { z } from "zod";
+import type { SubscriptionAuthorizer } from "./access.js";
+import {
+  BoundedQueue,
+  ConnectionLimiter,
+  RealtimeMetrics,
+  SubscriptionStore,
+} from "./domain.js";
+import type { TicketRepository } from "./tickets.js";
+
+const eventType = z.enum([
+  "telemetry.updated",
+  "device.health.updated",
+  "device.status.changed",
+  "alert.created",
+  "alert.updated",
+  "command.status.changed",
+  "profile.configuration.changed",
+  "profile.configuration.applied",
+  "ota.status.changed",
+  "system.notification",
+]);
+const subscription = z
+  .object({
+    resourceType: z.enum(["organization", "device", "current-user"]),
+    resourceId: z.string().uuid().optional(),
+    events: z
+      .array(eventType)
+      .min(1)
+      .refine((value) => new Set(value).size === value.length),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.resourceType === "current-user" && value.resourceId)
+      context.addIssue({
+        code: "custom",
+        message: "current-user omits resourceId",
+      });
+    if (value.resourceType !== "current-user" && !value.resourceId)
+      context.addIssue({ code: "custom", message: "resourceId is required" });
+  });
+const subscribeMessage = z
+  .object({
+    schema: z.literal("algaguard.websocket.subscribe"),
+    schemaVersion: z.literal("1.0.0"),
+    requestId: z.string().uuid(),
+    subscriptions: z.array(subscription).min(1).max(50),
+  })
+  .strict();
+const unsubscribeMessage = z
+  .object({
+    schema: z.literal("algaguard.websocket.unsubscribe"),
+    schemaVersion: z.literal("1.0.0"),
+    requestId: z.string().uuid(),
+    subscriptionIds: z
+      .array(z.string().uuid())
+      .min(1)
+      .refine((value) => new Set(value).size === value.length),
+  })
+  .strict();
+const pingMessage = z
+  .object({
+    schema: z.literal("algaguard.websocket.ping"),
+    schemaVersion: z.literal("1.0.0"),
+    requestId: z.string().uuid(),
+    sentAt: z.string().datetime(),
+  })
+  .strict();
 
 interface ClientContext {
   socket: WebSocket;
   subscriptions: SubscriptionStore;
+  queue: BoundedQueue<string>;
   alive: boolean;
+  lastActivity: number;
   messages: number;
   resetAt: number;
 }
 
-async function authorize(
-  subjectId: string,
-  resourceType: "organization" | "device" | "current-user",
-  resourceId?: string,
-) {
-  const response = await fetch(
-    `${process.env.ACCESS_SERVICE_URL ?? "http://access-service:3000"}/v1/authorizations/subscriptions`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ subjectId, resourceType, resourceId }),
-    },
-  );
-  if (!response.ok) return false;
-  return Boolean(((await response.json()) as { allowed?: boolean }).allowed);
-}
-
 function matches(context: ClientContext, event: Record<string, unknown>) {
   return [...context.subscriptions.subscriptions.values()].some(
-    (subscription) =>
-      subscription.resourceType === "current-user" ||
-      (subscription.resourceType === "device" &&
-        subscription.resourceId === event.deviceId) ||
-      (subscription.resourceType === "organization" &&
-        subscription.resourceId === event.organizationId),
+    (value) =>
+      value.events.includes(String(event.eventType)) &&
+      (value.resourceType === "current-user" ||
+        (value.resourceType === "device" &&
+          value.resourceId === event.deviceId) ||
+        (value.resourceType === "organization" &&
+          value.resourceId === event.organizationId)),
   );
 }
 
-export async function attachRealtimeServer(server: Server) {
+export async function attachRealtimeServer(
+  server: Server,
+  dependencies: {
+    tickets: TicketRepository;
+    authorize: SubscriptionAuthorizer;
+    metrics: RealtimeMetrics;
+    redisUrl: string;
+    heartbeatMs?: number;
+    idleMs?: number;
+  },
+) {
   const wss = new WebSocketServer({
     server,
     path: "/realtime",
     maxPayload: 256 * 1024,
   });
   const clients = new Set<ClientContext>();
-  const subscriber = createClient({
-    url: process.env.REDIS_URL ?? "redis://redis:6379",
-  });
+  const limiter = new ConnectionLimiter();
+  const subscriber = createClient({ url: dependencies.redisUrl });
+  subscriber.on("reconnecting", () =>
+    dependencies.metrics.add("redis_reconnects_total"),
+  );
   await subscriber.connect();
+
+  function enqueue(context: ClientContext, value: string) {
+    if (
+      context.socket.bufferedAmount > 512 * 1024 ||
+      !context.queue.push(value)
+    ) {
+      dependencies.metrics.add("slow_client_closures_total");
+      context.socket.close(4408, "slow client");
+      return;
+    }
+    dependencies.metrics.set("queue_depth", Math.max(context.queue.length, 0));
+    const next = context.queue.shift();
+    if (next && context.socket.readyState === WebSocket.OPEN) {
+      context.socket.send(next);
+      dependencies.metrics.add("messages_sent_total");
+      dependencies.metrics.set("queue_depth", context.queue.length);
+    }
+  }
+
   await subscriber.subscribe("algaguard.live", (raw) => {
     let event: Record<string, unknown>;
     try {
@@ -58,103 +141,176 @@ export async function attachRealtimeServer(server: Server) {
     } catch {
       return;
     }
-    for (const context of clients) {
-      if (
-        context.socket.readyState !== WebSocket.OPEN ||
-        !matches(context, event) ||
-        context.socket.bufferedAmount > 512 * 1024
-      ) {
-        if (context.socket.bufferedAmount > 512 * 1024)
-          context.socket.close(4408, "slow client");
-        continue;
-      }
-      context.socket.send(raw);
-    }
+    for (const context of clients)
+      if (matches(context, event)) enqueue(context, raw);
   });
 
   wss.on("connection", (socket, request) => {
     void (async () => {
+      const address = request.socket.remoteAddress ?? "unknown";
+      if (!limiter.take(address))
+        return socket.close(4429, "connection rate limit");
       const ticket =
         new URL(request.url ?? "/", "http://localhost").searchParams.get(
           "ticket",
         ) ?? "";
-      const subjectId = await consumeTicket(ticket);
-      if (!subjectId) return socket.close(4401, "invalid ticket");
-      const queue = new BoundedQueue<string>(100);
+      const subjectId = await dependencies.tickets.consume(ticket);
+      if (!subjectId) {
+        dependencies.metrics.add("auth_failures_total");
+        dependencies.metrics.add("ticket_replay_total");
+        return socket.close(4401, "invalid ticket");
+      }
+      const authorize = async (
+        resourceType: "organization" | "device" | "current-user",
+        resourceId?: string,
+      ) => {
+        const started = Date.now();
+        try {
+          return await dependencies.authorize(
+            subjectId,
+            resourceType,
+            resourceId,
+          );
+        } finally {
+          dependencies.metrics.add("authorization_requests_total");
+          dependencies.metrics.add(
+            "authorization_latency_ms_total",
+            Date.now() - started,
+          );
+        }
+      };
       const context: ClientContext = {
         socket,
-        subscriptions: new SubscriptionStore((resourceType, resourceId) =>
-          authorize(subjectId, resourceType, resourceId),
-        ),
+        subscriptions: new SubscriptionStore(authorize, 50),
+        queue: new BoundedQueue(100),
         alive: true,
+        lastActivity: Date.now(),
         messages: 0,
         resetAt: Date.now() + 60_000,
       };
       clients.add(context);
+      dependencies.metrics.set("active_connections", clients.size);
       socket.on("pong", () => {
         context.alive = true;
+        context.lastActivity = Date.now();
       });
       socket.on("message", (raw) => {
         void (async () => {
           const now = Date.now();
+          context.lastActivity = now;
           if (now >= context.resetAt) {
             context.messages = 0;
             context.resetAt = now + 60_000;
           }
           context.messages += 1;
-          if (context.messages > 120) return socket.close(4408, "rate limit");
+          if (context.messages > 120)
+            return socket.close(4429, "message rate limit");
           try {
-            const message = JSON.parse(raw.toString()) as {
-              schema?: string;
-              subscriptions?: Array<{
-                resourceType: "organization" | "device" | "current-user";
-                resourceId?: string;
-                events: string[];
-              }>;
-            };
-            if (message.schema === "algaguard.websocket.ping") {
-              return socket.send(
+            const value = JSON.parse(raw.toString()) as unknown;
+            const ping = pingMessage.safeParse(value);
+            if (ping.success)
+              return enqueue(
+                context,
                 JSON.stringify({
                   schema: "algaguard.websocket.pong",
                   schemaVersion: "1.0.0",
+                  requestId: ping.data.requestId,
                   receivedAt: new Date().toISOString(),
                 }),
               );
+            const remove = unsubscribeMessage.safeParse(value);
+            if (remove.success) {
+              context.subscriptions.remove(remove.data.subscriptionIds);
+              return enqueue(
+                context,
+                JSON.stringify({
+                  schema: "urn:algaguard:schema:websocket:subscription-ack:v1",
+                  schemaVersion: "1.0.0",
+                  requestId: remove.data.requestId,
+                  acknowledgedAt: new Date().toISOString(),
+                  accepted: [],
+                  rejected: [],
+                }),
+              );
             }
+            const add = subscribeMessage.parse(value);
             const accepted = [];
-            for (const subscription of message.subscriptions ?? []) {
-              const value = await context.subscriptions.add(subscription);
-              if (value) accepted.push(value);
+            const rejected = [];
+            for (const requested of add.subscriptions) {
+              const stored = await context.subscriptions.add({
+                resourceType: requested.resourceType,
+                ...(requested.resourceId
+                  ? { resourceId: requested.resourceId }
+                  : {}),
+                events: requested.events,
+              });
+              if (stored) {
+                dependencies.metrics.add("subscriptions_total");
+                accepted.push({
+                  subscriptionId: stored.id,
+                  resourceType: stored.resourceType,
+                  ...(stored.resourceId
+                    ? { resourceId: stored.resourceId }
+                    : {}),
+                  events: stored.events,
+                });
+              } else {
+                dependencies.metrics.add("rejected_subscriptions_total");
+                rejected.push({
+                  code: "SUBSCRIPTION_FORBIDDEN",
+                  message: "Subscription is not authorized or limit reached",
+                  retryable: false,
+                });
+              }
             }
-            if (!queue.push(JSON.stringify({ accepted })))
-              return socket.close(4408, "slow client");
-            socket.send(queue.shift()!);
+            enqueue(
+              context,
+              JSON.stringify({
+                schema: "urn:algaguard:schema:websocket:subscription-ack:v1",
+                schemaVersion: "1.0.0",
+                requestId: add.requestId,
+                acknowledgedAt: new Date().toISOString(),
+                accepted,
+                rejected,
+              }),
+            );
           } catch {
             socket.close(4400, "invalid message");
           }
         })();
       });
-      socket.on("close", () => clients.delete(context));
-    })();
+      socket.on("close", () => {
+        clients.delete(context);
+        dependencies.metrics.set("active_connections", clients.size);
+      });
+    })().catch(() => socket.close(1011, "dependency failure"));
   });
 
   const heartbeat = setInterval(() => {
     for (const context of clients) {
-      if (!context.alive) {
+      if (
+        !context.alive ||
+        Date.now() - context.lastActivity > (dependencies.idleMs ?? 90_000)
+      ) {
         context.socket.terminate();
         continue;
       }
       context.alive = false;
       context.socket.ping();
+      void context.subscriptions.stillAuthorized().then((allowed) => {
+        if (!allowed) context.socket.close(4403, "access revoked");
+      });
     }
-  }, 30_000);
+  }, dependencies.heartbeatMs ?? 30_000);
   heartbeat.unref();
   return {
     wss,
     async close() {
       clearInterval(heartbeat);
+      for (const context of clients)
+        context.socket.close(1001, "server shutdown");
       await subscriber.quit();
-      wss.close();
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
     },
   };
 }

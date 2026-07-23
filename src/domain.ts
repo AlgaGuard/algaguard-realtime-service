@@ -1,20 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
-export class TicketStore {
-  private readonly tickets = new Map<
-    string,
-    { subjectId: string; expiresAt: number }
-  >();
-  create(subjectId: string, ttlMs = 30_000) {
-    const ticket = randomBytes(24).toString("base64url");
-    this.tickets.set(ticket, { subjectId, expiresAt: Date.now() + ttlMs });
-    return ticket;
-  }
-  consume(ticket: string, now = Date.now()) {
-    const value = this.tickets.get(ticket);
-    this.tickets.delete(ticket);
-    return value && value.expiresAt > now ? value.subjectId : undefined;
-  }
-}
+import { randomUUID } from "node:crypto";
 export interface Subscription {
   id: string;
   resourceType: "organization" | "device" | "current-user";
@@ -28,17 +12,28 @@ export class SubscriptionStore {
       resourceType: Subscription["resourceType"],
       resourceId?: string,
     ) => Promise<boolean>,
+    private readonly maximum = 50,
   ) {}
   async add(input: Omit<Subscription, "id">) {
+    if (this.subscriptions.size >= this.maximum) return undefined;
     if (!(await this.authorize(input.resourceType, input.resourceId)))
       return undefined;
     const value = { ...input, id: randomUUID() };
     this.subscriptions.set(value.id, value);
     return value;
   }
+  remove(ids: string[]) {
+    for (const id of ids) this.subscriptions.delete(id);
+  }
   revoke(resourceId: string) {
     for (const [id, value] of this.subscriptions)
       if (value.resourceId === resourceId) this.subscriptions.delete(id);
+  }
+  async stillAuthorized() {
+    for (const value of this.subscriptions.values())
+      if (!(await this.authorize(value.resourceType, value.resourceId)))
+        return false;
+    return true;
   }
 }
 export class BoundedQueue<T> {
@@ -52,5 +47,52 @@ export class BoundedQueue<T> {
   shift() {
     return this.values.shift();
   }
+  get length() {
+    return this.values.length;
+  }
 }
-export const ticketStore = new TicketStore();
+export class ConnectionLimiter {
+  private readonly values = new Map<
+    string,
+    { count: number; resetAt: number }
+  >();
+  constructor(
+    private readonly maximum = 20,
+    private readonly windowMs = 60_000,
+  ) {}
+  take(key: string, now = Date.now()) {
+    const current = this.values.get(key);
+    if (!current || current.resetAt <= now) {
+      this.values.set(key, { count: 1, resetAt: now + this.windowMs });
+      return true;
+    }
+    current.count += 1;
+    return current.count <= this.maximum;
+  }
+}
+export class RealtimeMetrics {
+  private values = {
+    active_connections: 0,
+    auth_failures_total: 0,
+    ticket_replay_total: 0,
+    subscriptions_total: 0,
+    rejected_subscriptions_total: 0,
+    messages_sent_total: 0,
+    slow_client_closures_total: 0,
+    queue_depth: 0,
+    redis_reconnects_total: 0,
+    authorization_latency_ms_total: 0,
+    authorization_requests_total: 0,
+  };
+  add(name: keyof RealtimeMetrics["values"], amount = 1) {
+    this.values[name] += amount;
+  }
+  set(name: "active_connections" | "queue_depth", value: number) {
+    this.values[name] = value;
+  }
+  render() {
+    return `${Object.entries(this.values)
+      .map(([name, value]) => `algaguard_realtime_${name} ${value}`)
+      .join("\n")}\n`;
+  }
+}
