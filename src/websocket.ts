@@ -1,6 +1,6 @@
 import type { Server } from "node:http";
 import { createClient } from "redis";
-import { WebSocket, WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { z } from "zod";
 import type { SubscriptionAuthorizer } from "./access.js";
 import {
@@ -10,6 +10,7 @@ import {
   SubscriptionStore,
 } from "./domain.js";
 import type { TicketRepository } from "./tickets.js";
+import { telemetryCommittedSchema, toTelemetryUpdated } from "./events.js";
 
 const eventType = z.enum([
   "telemetry.updated",
@@ -80,13 +81,15 @@ interface ClientContext {
   resetAt: number;
 }
 
-function matches(context: ClientContext, event: Record<string, unknown>) {
-  return [...context.subscriptions.subscriptions.values()].some(
+async function matches(
+  context: ClientContext,
+  event: ReturnType<typeof toTelemetryUpdated>,
+) {
+  return context.subscriptions.hasAuthorizedMatch(
     (value) =>
-      value.events.includes(String(event.eventType)) &&
-      (value.resourceType === "current-user" ||
-        (value.resourceType === "device" &&
-          value.resourceId === event.deviceId) ||
+      value.events.includes(event.eventType) &&
+      ((value.resourceType === "device" &&
+        value.resourceId === event.deviceUuid) ||
         (value.resourceType === "organization" &&
           value.resourceId === event.organizationId)),
   );
@@ -135,17 +138,36 @@ export async function attachRealtimeServer(
   }
 
   await subscriber.subscribe("algaguard.live", (raw) => {
-    let event: Record<string, unknown>;
+    let input: unknown;
     try {
-      event = JSON.parse(raw) as Record<string, unknown>;
+      input = JSON.parse(raw) as unknown;
     } catch {
+      dependencies.metrics.add("invalid_events_total");
       return;
     }
-    for (const context of clients)
-      if (matches(context, event)) enqueue(context, raw);
+    const parsed = telemetryCommittedSchema.safeParse(input);
+    if (!parsed.success) {
+      dependencies.metrics.add("invalid_events_total");
+      return;
+    }
+    const event = toTelemetryUpdated(parsed.data);
+    const encoded = JSON.stringify(event);
+    void (async () => {
+      for (const context of clients)
+        if (await matches(context, event)) enqueue(context, encoded);
+    })();
   });
 
   wss.on("connection", (socket, request) => {
+    const bufferedMessages: RawData[] = [];
+    const bufferMessage = (raw: RawData) => {
+      if (bufferedMessages.length >= 50) {
+        socket.close(4429, "message rate limit");
+        return;
+      }
+      bufferedMessages.push(raw);
+    };
+    socket.on("message", bufferMessage);
     void (async () => {
       const address = request.socket.remoteAddress ?? "unknown";
       if (!limiter.take(address))
@@ -163,6 +185,7 @@ export async function attachRealtimeServer(
       const authorize = async (
         resourceType: "organization" | "device" | "current-user",
         resourceId?: string,
+        events?: string[],
       ) => {
         const started = Date.now();
         try {
@@ -170,6 +193,7 @@ export async function attachRealtimeServer(
             subjectId,
             resourceType,
             resourceId,
+            events,
           );
         } finally {
           dependencies.metrics.add("authorization_requests_total");
@@ -194,7 +218,7 @@ export async function attachRealtimeServer(
         context.alive = true;
         context.lastActivity = Date.now();
       });
-      socket.on("message", (raw) => {
+      const handleMessage = (raw: RawData) => {
         void (async () => {
           const now = Date.now();
           context.lastActivity = now;
@@ -278,7 +302,10 @@ export async function attachRealtimeServer(
             socket.close(4400, "invalid message");
           }
         })();
-      });
+      };
+      socket.off("message", bufferMessage);
+      socket.on("message", handleMessage);
+      for (const raw of bufferedMessages) handleMessage(raw);
       socket.on("close", () => {
         clients.delete(context);
         dependencies.metrics.set("active_connections", clients.size);

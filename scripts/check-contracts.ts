@@ -5,9 +5,13 @@ const contractRoot = path.resolve(
 );
 const required = [
   "schemas/common/event-envelope-v1.schema.json",
+  "schemas/common/device-identity-v1.schema.json",
+  "schemas/internal/telemetry-committed-v1.schema.json",
+  "schemas/websocket/telemetry-updated-v1-1.schema.json",
   "schemas/websocket/realtime-envelope-v1.schema.json",
   "asyncapi/algaguard-mqtt-v1.yaml",
   "asyncapi/algaguard-websocket-v1.yaml",
+  "asyncapi/algaguard-websocket-v1-1.yaml",
 ];
 const missing = required.filter(
   (file) => !fs.existsSync(path.join(contractRoot, file)),

@@ -26,6 +26,25 @@ test("subscriptions require authorization, enforce a maximum, and detect revocat
   );
   allowed = false;
   assert.equal(await store.stillAuthorized(), false);
+  assert.equal(store.subscriptions.size, 0);
+});
+
+test("matching subscriptions are reauthorized at delivery time", async () => {
+  let allowed = true;
+  const store = new SubscriptionStore(async () => allowed);
+  await store.add({
+    resourceType: "device",
+    resourceId: "20000000-0000-4000-8000-000000000001",
+    events: ["telemetry.updated"],
+  });
+  allowed = false;
+  assert.equal(
+    await store.hasAuthorizedMatch((value) =>
+      value.events.includes("telemetry.updated"),
+    ),
+    false,
+  );
+  assert.equal(store.subscriptions.size, 0);
 });
 
 test("bounded queue and connection limiter reject overload", () => {
@@ -44,4 +63,6 @@ test("required realtime metrics are rendered", () => {
   metrics.set("active_connections", 2);
   assert.match(metrics.render(), /algaguard_realtime_active_connections 2/);
   assert.match(metrics.render(), /algaguard_realtime_auth_failures_total 1/);
+  metrics.add("invalid_events_total");
+  assert.match(metrics.render(), /algaguard_realtime_invalid_events_total 1/);
 });

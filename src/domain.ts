@@ -11,12 +11,19 @@ export class SubscriptionStore {
     private readonly authorize: (
       resourceType: Subscription["resourceType"],
       resourceId?: string,
+      events?: string[],
     ) => Promise<boolean>,
     private readonly maximum = 50,
   ) {}
   async add(input: Omit<Subscription, "id">) {
     if (this.subscriptions.size >= this.maximum) return undefined;
-    if (!(await this.authorize(input.resourceType, input.resourceId)))
+    if (
+      !(await this.authorize(
+        input.resourceType,
+        input.resourceId,
+        input.events,
+      ))
+    )
       return undefined;
     const value = { ...input, id: randomUUID() };
     this.subscriptions.set(value.id, value);
@@ -30,10 +37,36 @@ export class SubscriptionStore {
       if (value.resourceId === resourceId) this.subscriptions.delete(id);
   }
   async stillAuthorized() {
-    for (const value of this.subscriptions.values())
-      if (!(await this.authorize(value.resourceType, value.resourceId)))
-        return false;
-    return true;
+    let allAllowed = true;
+    for (const [id, value] of this.subscriptions)
+      if (
+        !(await this.authorize(
+          value.resourceType,
+          value.resourceId,
+          value.events,
+        ))
+      ) {
+        this.subscriptions.delete(id);
+        allAllowed = false;
+      }
+    return allAllowed;
+  }
+  async hasAuthorizedMatch(predicate: (value: Subscription) => boolean) {
+    for (const [id, value] of this.subscriptions) {
+      if (!predicate(value)) continue;
+      if (
+        !(await this.authorize(
+          value.resourceType,
+          value.resourceId,
+          value.events,
+        ))
+      ) {
+        this.subscriptions.delete(id);
+        continue;
+      }
+      return true;
+    }
+    return false;
   }
 }
 export class BoundedQueue<T> {
@@ -83,6 +116,7 @@ export class RealtimeMetrics {
     redis_reconnects_total: 0,
     authorization_latency_ms_total: 0,
     authorization_requests_total: 0,
+    invalid_events_total: 0,
   };
   add(name: keyof RealtimeMetrics["values"], amount = 1) {
     this.values[name] += amount;
