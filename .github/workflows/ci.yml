@@ -10,6 +10,16 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -25,6 +35,7 @@ jobs:
       - run: npm run check
         env:
           CONTRACTS_DIR: algaguard-contracts
+          TEST_REDIS_URL: redis://localhost:6379
       - run: npm audit --audit-level=high
       - run: docker build -t algaguard-realtime-service:ci .
   publish:

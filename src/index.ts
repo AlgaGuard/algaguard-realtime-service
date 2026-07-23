@@ -1,28 +1,29 @@
+import { createSubscriptionAuthorizer } from "./access.js";
 import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import { RealtimeMetrics } from "./domain.js";
+import { RedisTicketRepository } from "./tickets.js";
 import { attachRealtimeServer } from "./websocket.js";
 const config = loadConfig();
-const server = buildApp().listen(config.PORT, () => {
+const tickets = new RedisTicketRepository(config.REDIS_URL);
+const metrics = new RealtimeMetrics();
+const server = buildApp(tickets, metrics).listen(config.PORT, () => {
   process.stdout.write(
-    JSON.stringify({
-      level: "info",
-      service: "algaguard-realtime-service",
-      message: "listening",
-      port: config.PORT,
-    }) + "\n",
+    `${JSON.stringify({ level: "info", service: "algaguard-realtime-service", message: "listening", port: config.PORT })}\n`,
   );
 });
-const realtime = await attachRealtimeServer(server);
+const realtime = await attachRealtimeServer(server, {
+  tickets,
+  authorize: createSubscriptionAuthorizer(),
+  metrics,
+  redisUrl: config.REDIS_URL,
+});
 async function shutdown(signal: string) {
   process.stdout.write(
-    JSON.stringify({
-      level: "info",
-      service: "algaguard-realtime-service",
-      message: "shutdown",
-      signal,
-    }) + "\n",
+    `${JSON.stringify({ level: "info", service: "algaguard-realtime-service", message: "shutdown", signal })}\n`,
   );
   await realtime.close();
+  await tickets.close();
   server.close((error) => process.exit(error ? 1 : 0));
   setTimeout(() => process.exit(1), 10_000).unref();
 }
