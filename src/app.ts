@@ -9,6 +9,7 @@ import { HttpError, type Authenticator } from "./auth.js";
 import { RealtimeMetrics } from "./domain.js";
 import { createRouter } from "./routes.js";
 import type { TicketRepository } from "./tickets.js";
+import type { PushRegistrationRepository } from "./push.js";
 const logger = pino({ level: process.env.LOG_LEVEL ?? "info" });
 const requestContext: RequestHandler = (request, response, next) => {
   const supplied = request.header("x-correlation-id");
@@ -39,6 +40,7 @@ export function buildApp(
   metrics = new RealtimeMetrics(),
   authenticate?: Authenticator,
   bodyLimitBytes = 32 * 1_024,
+  pushRegistrations?: PushRegistrationRepository,
 ) {
   const app = express();
   app.disable("x-powered-by");
@@ -63,7 +65,10 @@ export function buildApp(
       });
     }
   });
-  app.use("/v1", createRouter(tickets, metrics, authenticate));
+  app.use(
+    "/v1",
+    createRouter(tickets, metrics, authenticate, pushRegistrations),
+  );
   app.use((_request, response) =>
     response
       .status(404)

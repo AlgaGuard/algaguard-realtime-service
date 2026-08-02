@@ -11,6 +11,7 @@ import {
 } from "./domain.js";
 import type { TicketRepository } from "./tickets.js";
 import { telemetryCommittedSchema, toTelemetryUpdated } from "./events.js";
+import type { ThresholdPushProcessor } from "./push.js";
 
 const eventType = z.enum([
   "telemetry.updated",
@@ -111,6 +112,7 @@ export async function attachRealtimeServer(
     idleMs?: number;
     backpressureBytes?: number;
     preauthBufferMessages?: number;
+    alertProcessor?: Pick<ThresholdPushProcessor, "process">;
   },
 ) {
   const wss = new WebSocketServer({
@@ -161,6 +163,11 @@ export async function attachRealtimeServer(
       return;
     }
     const event = toTelemetryUpdated(parsed.data);
+    if (dependencies.alertProcessor) {
+      void dependencies.alertProcessor
+        .process(parsed.data)
+        .catch(() => dependencies.metrics.add("push_failures_total"));
+    }
     const encoded = JSON.stringify(event);
     void (async () => {
       for (const context of clients)

@@ -117,6 +117,8 @@ export class RealtimeMetrics {
     authorization_latency_ms_total: 0,
     authorization_requests_total: 0,
     invalid_events_total: 0,
+    push_notifications_total: 0,
+    push_failures_total: 0,
   };
   add(name: keyof RealtimeMetrics["values"], amount = 1) {
     this.values[name] += amount;

@@ -5,7 +5,7 @@ export type SubscriptionAuthorizer = (
   events?: string[],
 ) => Promise<boolean>;
 let cachedToken: { value: string; expiresAt: number } | undefined;
-async function serviceToken(environment: NodeJS.ProcessEnv) {
+export async function serviceToken(environment: NodeJS.ProcessEnv) {
   if (cachedToken && cachedToken.expiresAt > Date.now() + 10_000)
     return cachedToken.value;
   const issuer =

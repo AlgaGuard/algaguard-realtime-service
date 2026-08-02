@@ -65,6 +65,21 @@ const environmentSchema = z
       .min(1)
       .max(100)
       .default(50),
+    ALGAGUARD_ENABLE_FCM: z.enum(["0", "1"]).default("0"),
+    FCM_PROJECT_ID: z.string().min(1).max(128).optional(),
+    FCM_CLIENT_EMAIL: z.string().email().optional(),
+    FCM_PRIVATE_KEY_PKCS8_BASE64: z.string().min(64).optional(),
+    FCM_TOKEN_WRAPPING_KEY_BASE64: z.string().min(43).max(48).optional(),
+    PROFILE_SERVICE_URL: z
+      .string()
+      .url()
+      .default("http://profile-service:3000"),
+    PUSH_REGISTRATION_TTL_DAYS: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(365)
+      .default(90),
   })
   .superRefine((value, context) => {
     if (value.WS_IDLE_TIMEOUT_MS < value.WS_HEARTBEAT_MS * 2)
@@ -73,6 +88,42 @@ const environmentSchema = z
         path: ["WS_IDLE_TIMEOUT_MS"],
         message: "must be at least twice WS_HEARTBEAT_MS",
       });
+    if (value.ALGAGUARD_ENABLE_FCM === "1") {
+      for (const key of [
+        "FCM_PROJECT_ID",
+        "FCM_CLIENT_EMAIL",
+        "FCM_PRIVATE_KEY_PKCS8_BASE64",
+        "FCM_TOKEN_WRAPPING_KEY_BASE64",
+      ] as const) {
+        if (!value[key])
+          context.addIssue({
+            code: "custom",
+            path: [key],
+            message: "is required when FCM is enabled",
+          });
+      }
+      if (
+        value.FCM_TOKEN_WRAPPING_KEY_BASE64 &&
+        Buffer.from(value.FCM_TOKEN_WRAPPING_KEY_BASE64, "base64").length !== 32
+      )
+        context.addIssue({
+          code: "custom",
+          path: ["FCM_TOKEN_WRAPPING_KEY_BASE64"],
+          message: "must decode to exactly 32 bytes",
+        });
+      if (value.FCM_PRIVATE_KEY_PKCS8_BASE64) {
+        const decoded = Buffer.from(
+          value.FCM_PRIVATE_KEY_PKCS8_BASE64,
+          "base64",
+        ).toString("utf8");
+        if (!decoded.includes("-----BEGIN PRIVATE KEY-----"))
+          context.addIssue({
+            code: "custom",
+            path: ["FCM_PRIVATE_KEY_PKCS8_BASE64"],
+            message: "must contain a base64-encoded PKCS8 private key",
+          });
+      }
+    }
   });
 export type ServiceConfig = z.infer<typeof environmentSchema>;
 export function loadConfig(
