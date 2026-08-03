@@ -1,14 +1,17 @@
 import { Router } from "express";
+import { HttpError } from "./auth.js";
 import { createAuthenticator, type Authenticator } from "./auth.js";
 import type { RealtimeMetrics } from "./domain.js";
 import type { TicketRepository } from "./tickets.js";
 import type { PushRegistrationRepository } from "./push.js";
+import type { OrganizationPushNotifier } from "./push.js";
 import { z } from "zod";
 export function createRouter(
   tickets: TicketRepository,
   metrics: RealtimeMetrics,
   authenticate: Authenticator = createAuthenticator(),
   pushRegistrations?: PushRegistrationRepository,
+  organizationNotifier?: OrganizationPushNotifier,
 ) {
   const router = Router();
   router.post("/tickets", async (request, response) => {
@@ -53,6 +56,28 @@ export function createRouter(
         await pushRegistrations.unregister(
           principal.subjectId,
           z.string().uuid().parse(request.params.installationId),
+        );
+        response.status(204).end();
+      },
+    );
+  }
+  if (organizationNotifier) {
+    router.post(
+      "/internal/notifications/device-unpaired",
+      async (request, response) => {
+        const principal = await authenticate(request.header("authorization"));
+        if (!principal.service)
+          throw new HttpError(403, "Service token required");
+        const input = z
+          .object({
+            organizationId: z.string().uuid(),
+            eventId: z.string().uuid(),
+          })
+          .strict()
+          .parse(request.body);
+        await organizationNotifier.deviceUnpaired(
+          input.organizationId,
+          input.eventId,
         );
         response.status(204).end();
       },

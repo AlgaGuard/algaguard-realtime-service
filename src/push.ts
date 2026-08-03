@@ -277,6 +277,9 @@ export interface PushSender {
     registrationToken: string,
     parameter: string,
   ): Promise<"SENT" | "UNREGISTERED">;
+  sendDeviceUnpaired?(
+    registrationToken: string,
+  ): Promise<"SENT" | "UNREGISTERED">;
 }
 
 export class FcmHttpV1Sender implements PushSender {
@@ -330,6 +333,25 @@ export class FcmHttpV1Sender implements PushSender {
   }
 
   async send(registrationToken: string, parameter: string) {
+    return this.sendMessage(registrationToken, {
+      title: "AlgaGuard threshold alert",
+      body: "A reading is outside the assigned algae profile range.",
+      data: { type: "THRESHOLD_ALERT", parameter },
+    });
+  }
+
+  async sendDeviceUnpaired(registrationToken: string) {
+    return this.sendMessage(registrationToken, {
+      title: "AlgaGuard device unpaired",
+      body: "This device is no longer associated with your organization.",
+      data: { type: "DEVICE_UNPAIRED" },
+    });
+  }
+
+  private async sendMessage(
+    registrationToken: string,
+    value: { title: string; body: string; data: Record<string, string> },
+  ) {
     const response = await this.fetcher(
       `https://fcm.googleapis.com/v1/projects/${encodeURIComponent(this.projectId)}/messages:send`,
       {
@@ -341,11 +363,8 @@ export class FcmHttpV1Sender implements PushSender {
         body: JSON.stringify({
           message: {
             token: registrationToken,
-            notification: {
-              title: "AlgaGuard threshold alert",
-              body: "A reading is outside the assigned algae profile range.",
-            },
-            data: { type: "THRESHOLD_ALERT", parameter },
+            notification: { title: value.title, body: value.body },
+            data: value.data,
             android: { priority: "HIGH" },
           },
         }),
@@ -354,6 +373,55 @@ export class FcmHttpV1Sender implements PushSender {
     if (response.ok) return "SENT" as const;
     if (response.status === 404) return "UNREGISTERED" as const;
     throw new Error(`FCM delivery failed with ${response.status}`);
+  }
+}
+
+export class OrganizationPushNotifier {
+  constructor(
+    private readonly registrations: PushRegistrationRepository,
+    private readonly authorize: SubscriptionAuthorizer,
+    private readonly sender: PushSender,
+    private readonly metrics: RealtimeMetrics,
+  ) {}
+
+  async deviceUnpaired(organizationId: string, eventId: string) {
+    const recipients = await this.registrations.list();
+    for (const registration of recipients) {
+      if (
+        !(await this.authorize(
+          registration.subjectId,
+          "organization",
+          organizationId,
+          ["system.notification"],
+        ))
+      )
+        continue;
+      const deliveryKey = createHash("sha256")
+        .update(`device-unpaired:${eventId}:${registration.id}`)
+        .digest("hex");
+      const previous = await this.registrations.transitionAlert(
+        deliveryKey,
+        "PENDING",
+      );
+      if (previous === "PENDING" || previous === "SENT") continue;
+      try {
+        if (!this.sender.sendDeviceUnpaired)
+          throw new Error("Device-unpair push delivery is unavailable");
+        const result = await this.sender.sendDeviceUnpaired(
+          registration.registrationToken,
+        );
+        if (result === "UNREGISTERED")
+          await this.registrations.remove(registration.id);
+        else {
+          await this.registrations.transitionAlert(deliveryKey, "SENT");
+          this.metrics.add("push_notifications_total");
+        }
+      } catch {
+        await this.registrations.transitionAlert(deliveryKey, "FAILED");
+        this.metrics.add("push_failures_total");
+        throw new Error("Organization notification delivery failed");
+      }
+    }
   }
 }
 

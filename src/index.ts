@@ -6,6 +6,7 @@ import { RedisTicketRepository } from "./tickets.js";
 import { attachRealtimeServer } from "./websocket.js";
 import {
   FcmHttpV1Sender,
+  OrganizationPushNotifier,
   ProfileThresholdClient,
   RedisPushRegistrationRepository,
   ThresholdPushProcessor,
@@ -22,16 +23,19 @@ const pushRegistrations =
       )
     : undefined;
 const subscriptionAuthorizer = createSubscriptionAuthorizer();
+const fcmSender = pushRegistrations
+  ? new FcmHttpV1Sender(
+      config.FCM_PROJECT_ID!,
+      config.FCM_CLIENT_EMAIL!,
+      config.FCM_PRIVATE_KEY_PKCS8_BASE64!,
+    )
+  : undefined;
 const alertProcessor = pushRegistrations
   ? new ThresholdPushProcessor(
       pushRegistrations,
       new ProfileThresholdClient(),
       subscriptionAuthorizer,
-      new FcmHttpV1Sender(
-        config.FCM_PROJECT_ID!,
-        config.FCM_CLIENT_EMAIL!,
-        config.FCM_PRIVATE_KEY_PKCS8_BASE64!,
-      ),
+      fcmSender!,
       metrics,
     )
   : undefined;
@@ -41,6 +45,14 @@ const server = buildApp(
   undefined,
   config.HTTP_BODY_LIMIT_BYTES,
   pushRegistrations,
+  pushRegistrations && fcmSender
+    ? new OrganizationPushNotifier(
+        pushRegistrations,
+        subscriptionAuthorizer,
+        fcmSender,
+        metrics,
+      )
+    : undefined,
 ).listen(config.PORT, () => {
   process.stdout.write(
     `${JSON.stringify({ level: "info", service: "algaguard-realtime-service", message: "listening", port: config.PORT })}\n`,
