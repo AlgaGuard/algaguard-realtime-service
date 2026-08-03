@@ -66,10 +66,22 @@ const environmentSchema = z
       .max(100)
       .default(50),
     ALGAGUARD_ENABLE_FCM: z.enum(["0", "1"]).default("0"),
-    FCM_PROJECT_ID: z.string().min(1).max(128).optional(),
-    FCM_CLIENT_EMAIL: z.string().email().optional(),
-    FCM_PRIVATE_KEY_PKCS8_BASE64: z.string().min(64).optional(),
-    FCM_TOKEN_WRAPPING_KEY_BASE64: z.string().min(43).max(48).optional(),
+    FCM_PROJECT_ID: z.preprocess(
+      (value) => (value === "" ? undefined : value),
+      z.string().min(1).max(128).optional(),
+    ),
+    FCM_CLIENT_EMAIL: z.preprocess(
+      (value) => (value === "" ? undefined : value),
+      z.string().email().optional(),
+    ),
+    FCM_PRIVATE_KEY_PKCS8_BASE64: z.preprocess(
+      (value) => (value === "" ? undefined : value),
+      z.string().min(64).optional(),
+    ),
+    FCM_TOKEN_WRAPPING_KEY_BASE64: z.preprocess(
+      (value) => (value === "" ? undefined : value),
+      z.string().min(43).max(48).optional(),
+    ),
     PROFILE_SERVICE_URL: z
       .string()
       .url()
