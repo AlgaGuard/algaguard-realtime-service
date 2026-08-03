@@ -1,4 +1,6 @@
 import { Router } from "express";
+import type { SubscriptionAuthorizer } from "./access.js";
+import type { AlertRepository } from "./alerts.js";
 import { HttpError } from "./auth.js";
 import { createAuthenticator, type Authenticator } from "./auth.js";
 import type { RealtimeMetrics } from "./domain.js";
@@ -12,6 +14,8 @@ export function createRouter(
   authenticate: Authenticator = createAuthenticator(),
   pushRegistrations?: PushRegistrationRepository,
   organizationNotifier?: OrganizationPushNotifier,
+  alerts?: AlertRepository,
+  authorize?: SubscriptionAuthorizer,
 ) {
   const router = Router();
   router.post("/tickets", async (request, response) => {
@@ -82,6 +86,45 @@ export function createRouter(
         response.status(204).end();
       },
     );
+  }
+  if (alerts && authorize) {
+    const limitParam = z.coerce.number().int().min(1).max(200).default(50);
+    router.get(
+      "/organizations/:organizationId/alerts",
+      async (request, response) => {
+        const principal = await authenticate(request.header("authorization"));
+        const organizationId = z
+          .string()
+          .uuid()
+          .parse(request.params.organizationId);
+        if (
+          !(await authorize(
+            principal.subjectId,
+            "organization",
+            organizationId,
+          ))
+        )
+          throw new HttpError(403, "Alert history is not authorized");
+        response.json({
+          items: await alerts.listByOrganization(
+            organizationId,
+            limitParam.parse(request.query.limit),
+          ),
+        });
+      },
+    );
+    router.get("/devices/:deviceUuid/alerts", async (request, response) => {
+      const principal = await authenticate(request.header("authorization"));
+      const deviceUuid = z.string().uuid().parse(request.params.deviceUuid);
+      if (!(await authorize(principal.subjectId, "device", deviceUuid)))
+        throw new HttpError(403, "Alert history is not authorized");
+      response.json({
+        items: await alerts.listByDevice(
+          deviceUuid,
+          limitParam.parse(request.query.limit),
+        ),
+      });
+    });
   }
   return router;
 }

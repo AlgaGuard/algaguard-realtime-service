@@ -5,6 +5,8 @@ import express, {
 } from "express";
 import { trace } from "@opentelemetry/api";
 import pino from "pino";
+import type { SubscriptionAuthorizer } from "./access.js";
+import type { AlertRepository } from "./alerts.js";
 import { HttpError, type Authenticator } from "./auth.js";
 import { RealtimeMetrics } from "./domain.js";
 import { createRouter } from "./routes.js";
@@ -43,6 +45,8 @@ export function buildApp(
   bodyLimitBytes = 32 * 1_024,
   pushRegistrations?: PushRegistrationRepository,
   organizationNotifier?: OrganizationPushNotifier,
+  alerts?: AlertRepository,
+  authorize?: SubscriptionAuthorizer,
 ) {
   const app = express();
   app.disable("x-powered-by");
@@ -75,6 +79,8 @@ export function buildApp(
       authenticate,
       pushRegistrations,
       organizationNotifier,
+      alerts,
+      authorize,
     ),
   );
   app.use((_request, response) =>

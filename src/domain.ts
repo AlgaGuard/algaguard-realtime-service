@@ -119,6 +119,7 @@ export class RealtimeMetrics {
     invalid_events_total: 0,
     push_notifications_total: 0,
     push_failures_total: 0,
+    alert_persistence_failures_total: 0,
   };
   add(name: keyof RealtimeMetrics["values"], amount = 1) {
     this.values[name] += amount;

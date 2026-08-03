@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { loadConfig } from "../src/config.js";
 
 test("transport configuration has bounded conservative defaults", () => {
-  const config = loadConfig({ REDIS_URL: "redis://localhost:6379" });
+  const config = loadConfig({
+    REDIS_URL: "redis://localhost:6379",
+    DATABASE_URL: "postgresql://localhost:5432/test",
+  });
   assert.equal(config.HTTP_BODY_LIMIT_BYTES, 32 * 1_024);
   assert.equal(config.WS_MAX_MESSAGE_BYTES, 256 * 1_024);
   assert.equal(config.WS_MAX_SUBSCRIPTIONS, 50);
@@ -19,6 +22,7 @@ test("transport configuration has bounded conservative defaults", () => {
 test("transport configuration accepts valid overrides", () => {
   const config = loadConfig({
     REDIS_URL: "redis://localhost:6379",
+    DATABASE_URL: "postgresql://localhost:5432/test",
     HTTP_BODY_LIMIT_BYTES: "4096",
     WS_MAX_MESSAGE_BYTES: "8192",
     WS_MAX_SUBSCRIPTIONS: "10",
@@ -40,12 +44,14 @@ test("transport configuration rejects unsafe values and timeout coupling", () =>
   assert.throws(() =>
     loadConfig({
       REDIS_URL: "redis://localhost:6379",
+      DATABASE_URL: "postgresql://localhost:5432/test",
       WS_MAX_SUBSCRIPTIONS: "51",
     }),
   );
   assert.throws(() =>
     loadConfig({
       REDIS_URL: "redis://localhost:6379",
+      DATABASE_URL: "postgresql://localhost:5432/test",
       WS_HEARTBEAT_MS: "30000",
       WS_IDLE_TIMEOUT_MS: "50000",
     }),

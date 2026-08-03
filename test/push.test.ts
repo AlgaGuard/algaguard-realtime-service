@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import request from "supertest";
 import { buildApp } from "../src/app.js";
 import { RealtimeMetrics } from "../src/domain.js";
+import { MemoryAlertRepository } from "../src/alerts.js";
 import {
   MemoryPushRegistrationRepository,
   ThresholdPushProcessor,
@@ -81,14 +82,14 @@ test("threshold delivery occurs once per breach transition and honors access", a
         profileId: "70000000-0000-4000-8000-000000000001",
         version: 1,
         configuration: {
-          schema: "urn:algaguard:schema:profile:algae-thresholds:v1",
-          parameters: {
-            temperatureC: { minimum: 20, maximum: 30 },
-            ph: { minimum: 6, maximum: 8 },
-            lightLux: { minimum: 100, maximum: 1000 },
-            nitrateMgL: { minimum: 1, maximum: 100 },
-            phosphateMgL: { minimum: 1, maximum: 100 },
-            potassiumMgL: { minimum: 1, maximum: 100 },
+          status: "ACTIVE",
+          thresholds: {
+            temperatureC: { min: 20, max: 30 },
+            ph: { min: 6, max: 8 },
+            lightLux: { min: 100, max: 1000 },
+            nitrateMgL: { min: 1, max: 100 },
+            phosphateMgL: { min: 1, max: 100 },
+            potassiumMgL: { min: 1, max: 100 },
           },
         },
       };
@@ -130,15 +131,71 @@ test("threshold delivery occurs once per breach transition and honors access", a
   assert.equal(sent.length, 2);
 });
 
+test("threshold breaches persist once per transition, independent of push delivery", async () => {
+  const profile: AlertProfileResolver = {
+    async resolve() {
+      return {
+        profileId: "70000000-0000-4000-8000-000000000001",
+        version: 1,
+        configuration: {
+          status: "ACTIVE",
+          thresholds: {
+            temperatureC: { min: 20, max: 30 },
+            ph: { min: 6, max: 8 },
+            lightLux: { min: 100, max: 1000 },
+            nitrateMgL: { min: 1, max: 100 },
+            phosphateMgL: { min: 1, max: 100 },
+            potassiumMgL: { min: 1, max: 100 },
+          },
+        },
+      };
+    },
+  };
+  const alerts = new MemoryAlertRepository();
+  const processor = new ThresholdPushProcessor(
+    new MemoryPushRegistrationRepository(),
+    profile,
+    async () => true,
+    undefined,
+    new RealtimeMetrics(),
+    alerts,
+  );
+  const event = telemetryCommittedSchema.parse({
+    ...committedEvent,
+    payload: {
+      sample: { ...committedEvent.payload.sample, values: { ph: 9 } },
+    },
+  });
+  await processor.process(event);
+  await processor.process(event);
+  const recorded = await alerts.listByOrganization(event.organizationId, 10);
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0]?.parameter, "ph");
+  assert.equal(recorded[0]?.direction, "HIGH");
+  assert.equal(recorded[0]?.value, 9);
+  assert.equal(recorded[0]?.maximum, 8);
+
+  await processor.process({
+    ...event,
+    payload: { sample: { ...event.payload.sample, values: { ph: 7 } } },
+  });
+  await processor.process(event);
+  assert.equal(
+    (await alerts.listByOrganization(event.organizationId, 10)).length,
+    2,
+  );
+});
+
 test("FCM startup configuration is disabled by default and fail-closed", async () => {
   const { loadConfig } = await import("../src/config.js");
-  assert.equal(
-    loadConfig({ REDIS_URL: "redis://localhost:6379" }).ALGAGUARD_ENABLE_FCM,
-    "0",
-  );
+  const base = {
+    REDIS_URL: "redis://localhost:6379",
+    DATABASE_URL: "postgresql://localhost:5432/test",
+  };
+  assert.equal(loadConfig(base).ALGAGUARD_ENABLE_FCM, "0");
   assert.throws(() =>
     loadConfig({
-      REDIS_URL: "redis://localhost:6379",
+      ...base,
       ALGAGUARD_ENABLE_FCM: "1",
     }),
   );

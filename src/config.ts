@@ -7,6 +7,7 @@ const environmentSchema = z
       .default("development"),
     PORT: z.coerce.number().int().min(1).max(65535).default(3000),
     REDIS_URL: z.string().url(),
+    DATABASE_URL: z.string().url(),
     LOG_LEVEL: z
       .enum(["fatal", "error", "warn", "info", "debug", "trace"])
       .default("info"),

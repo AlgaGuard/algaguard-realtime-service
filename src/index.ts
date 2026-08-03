@@ -1,4 +1,5 @@
 import { createSubscriptionAuthorizer } from "./access.js";
+import { PostgresAlertRepository } from "./alerts.js";
 import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { RealtimeMetrics } from "./domain.js";
@@ -6,6 +7,7 @@ import { RedisTicketRepository } from "./tickets.js";
 import { attachRealtimeServer } from "./websocket.js";
 import {
   FcmHttpV1Sender,
+  MemoryPushRegistrationRepository,
   OrganizationPushNotifier,
   ProfileThresholdClient,
   RedisPushRegistrationRepository,
@@ -14,6 +16,7 @@ import {
 const config = loadConfig();
 const tickets = new RedisTicketRepository(config.REDIS_URL);
 const metrics = new RealtimeMetrics();
+const alertRepository = new PostgresAlertRepository(config.DATABASE_URL);
 const pushRegistrations =
   config.ALGAGUARD_ENABLE_FCM === "1"
     ? new RedisPushRegistrationRepository(
@@ -30,15 +33,16 @@ const fcmSender = pushRegistrations
       config.FCM_PRIVATE_KEY_PKCS8_BASE64!,
     )
   : undefined;
-const alertProcessor = pushRegistrations
-  ? new ThresholdPushProcessor(
-      pushRegistrations,
-      new ProfileThresholdClient(),
-      subscriptionAuthorizer,
-      fcmSender!,
-      metrics,
-    )
-  : undefined;
+// Threshold evaluation and alert-history persistence always run; push
+// delivery only happens once FCM is configured (fcmSender is set).
+const alertProcessor = new ThresholdPushProcessor(
+  pushRegistrations ?? new MemoryPushRegistrationRepository(),
+  new ProfileThresholdClient(),
+  subscriptionAuthorizer,
+  fcmSender,
+  metrics,
+  alertRepository,
+);
 const server = buildApp(
   tickets,
   metrics,
@@ -53,6 +57,8 @@ const server = buildApp(
         metrics,
       )
     : undefined,
+  alertRepository,
+  subscriptionAuthorizer,
 ).listen(config.PORT, () => {
   process.stdout.write(
     `${JSON.stringify({ level: "info", service: "algaguard-realtime-service", message: "listening", port: config.PORT })}\n`,
@@ -72,7 +78,7 @@ const realtime = await attachRealtimeServer(server, {
   idleMs: config.WS_IDLE_TIMEOUT_MS,
   backpressureBytes: config.WS_BACKPRESSURE_BYTES,
   preauthBufferMessages: config.WS_PREAUTH_BUFFER_MESSAGES,
-  ...(alertProcessor ? { alertProcessor } : {}),
+  alertProcessor,
 });
 async function shutdown(signal: string) {
   process.stdout.write(
@@ -81,6 +87,7 @@ async function shutdown(signal: string) {
   await realtime.close();
   await tickets.close();
   await pushRegistrations?.close();
+  await alertRepository.close();
   server.close((error) => process.exit(error ? 1 : 0));
   setTimeout(() => process.exit(1), 10_000).unref();
 }

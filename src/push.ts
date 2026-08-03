@@ -9,6 +9,7 @@ import { createClient, type RedisClientType } from "redis";
 import { z } from "zod";
 import type { SubscriptionAuthorizer } from "./access.js";
 import { serviceToken } from "./access.js";
+import type { AlertRepository } from "./alerts.js";
 import type { RealtimeMetrics } from "./domain.js";
 import type { TelemetryCommittedEvent } from "./events.js";
 
@@ -213,14 +214,17 @@ export class MemoryPushRegistrationRepository implements PushRegistrationReposit
   async close() {}
 }
 
+const thresholdBounds = z
+  .object({ min: z.number().optional(), max: z.number().optional() })
+  .strict();
 const thresholds = z
   .object({
-    temperatureC: z.object({ minimum: z.number(), maximum: z.number() }),
-    ph: z.object({ minimum: z.number(), maximum: z.number() }),
-    lightLux: z.object({ minimum: z.number(), maximum: z.number() }),
-    nitrateMgL: z.object({ minimum: z.number(), maximum: z.number() }),
-    phosphateMgL: z.object({ minimum: z.number(), maximum: z.number() }),
-    potassiumMgL: z.object({ minimum: z.number(), maximum: z.number() }),
+    temperatureC: thresholdBounds.optional(),
+    ph: thresholdBounds.optional(),
+    lightLux: thresholdBounds.optional(),
+    nitrateMgL: thresholdBounds.optional(),
+    phosphateMgL: thresholdBounds.optional(),
+    potassiumMgL: thresholdBounds.optional(),
   })
   .strict();
 
@@ -230,8 +234,8 @@ const alertProfile = z
     version: z.number().int().positive(),
     configuration: z
       .object({
-        schema: z.literal("urn:algaguard:schema:profile:algae-thresholds:v1"),
-        parameters: thresholds,
+        status: z.string().optional(),
+        thresholds: thresholds.default({}),
       })
       .strict(),
   })
@@ -439,8 +443,9 @@ export class ThresholdPushProcessor {
     private readonly registrations: PushRegistrationRepository,
     private readonly profiles: AlertProfileResolver,
     private readonly authorize: SubscriptionAuthorizer,
-    private readonly sender: PushSender,
+    private readonly sender: PushSender | undefined,
     private readonly metrics: RealtimeMetrics,
+    private readonly alerts?: AlertRepository,
   ) {}
 
   async process(event: TelemetryCommittedEvent) {
@@ -454,11 +459,17 @@ export class ThresholdPushProcessor {
       const value = values[parameter as keyof typeof values];
       if (typeof value !== "number") continue;
       const bounds =
-        profile.configuration.parameters[
-          parameter as keyof typeof profile.configuration.parameters
+        profile.configuration.thresholds[
+          parameter as keyof typeof profile.configuration.thresholds
         ];
+      if (!bounds || (bounds.min === undefined && bounds.max === undefined))
+        continue;
       const next =
-        value < bounds.minimum ? "LOW" : value > bounds.maximum ? "HIGH" : "OK";
+        bounds.min !== undefined && value < bounds.min
+          ? "LOW"
+          : bounds.max !== undefined && value > bounds.max
+            ? "HIGH"
+            : "OK";
       const key = createHash("sha256")
         .update(
           `${event.deviceUuid}:${profile.profileId}:${profile.version}:${parameter}`,
@@ -466,6 +477,26 @@ export class ThresholdPushProcessor {
         .digest("hex");
       const previous = await this.registrations.transitionAlert(key, next);
       if (next === "OK" || previous === next) continue;
+      if (this.alerts) {
+        try {
+          await this.alerts.record({
+            deviceUuid: event.deviceUuid,
+            deviceId: event.deviceId,
+            organizationId: event.organizationId,
+            parameter,
+            direction: next,
+            value,
+            minimum: bounds.min,
+            maximum: bounds.max,
+            profileId: profile.profileId,
+            profileVersion: profile.version,
+          });
+        } catch {
+          this.metrics.add("alert_persistence_failures_total");
+        }
+      }
+      if (!this.sender) continue;
+      const sender = this.sender;
       const recipients = await this.registrations.list();
       for (const registration of recipients) {
         if (
@@ -478,7 +509,7 @@ export class ThresholdPushProcessor {
         )
           continue;
         try {
-          const result = await this.sender.send(
+          const result = await sender.send(
             registration.registrationToken,
             label,
           );

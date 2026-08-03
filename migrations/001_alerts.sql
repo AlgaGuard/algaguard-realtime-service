@@ -1,0 +1,3 @@
+CREATE TABLE alerts (alert_id uuid PRIMARY KEY DEFAULT gen_random_uuid(), device_uuid uuid NOT NULL, device_id text NOT NULL, organization_id uuid NOT NULL, parameter text NOT NULL, direction text NOT NULL CHECK (direction IN ('LOW','HIGH')), value double precision NOT NULL, minimum double precision NOT NULL, maximum double precision NOT NULL, profile_id uuid NOT NULL, profile_version integer NOT NULL, occurred_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX alerts_org_time ON alerts(organization_id, occurred_at DESC);
+CREATE INDEX alerts_device_time ON alerts(device_uuid, occurred_at DESC);
