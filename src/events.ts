@@ -23,6 +23,8 @@ const telemetrySample = z
     qualityFlags: z
       .array(
         z.enum([
+          "REAL",
+          "DEGRADED",
           "SIMULATED",
           "SENSOR_UNAVAILABLE",
           "OUT_OF_EXPECTED_RANGE",
