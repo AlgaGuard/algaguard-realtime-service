@@ -87,9 +87,7 @@ test("threshold delivery occurs once per breach transition and honors access", a
             temperatureC: { min: 20, max: 30 },
             ph: { min: 6, max: 8 },
             lightLux: { min: 100, max: 1000 },
-            nitrateMgL: { min: 1, max: 100 },
-            phosphateMgL: { min: 1, max: 100 },
-            potassiumMgL: { min: 1, max: 100 },
+            nutrientPercent: { min: 1, max: 100 },
           },
         },
       };
@@ -143,9 +141,7 @@ test("threshold breaches persist once per transition, independent of push delive
             temperatureC: { min: 20, max: 30 },
             ph: { min: 6, max: 8 },
             lightLux: { min: 100, max: 1000 },
-            nitrateMgL: { min: 1, max: 100 },
-            phosphateMgL: { min: 1, max: 100 },
-            potassiumMgL: { min: 1, max: 100 },
+            nutrientPercent: { min: 1, max: 100 },
           },
         },
       };

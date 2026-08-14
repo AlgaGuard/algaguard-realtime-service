@@ -7,9 +7,7 @@ const parameterValues = z
     temperatureC: z.number().optional(),
     ph: z.number().min(0).max(14).optional(),
     lightLux: z.number().min(0).optional(),
-    nitrateMgL: z.number().min(0).optional(),
-    phosphateMgL: z.number().min(0).optional(),
-    potassiumMgL: z.number().min(0).optional(),
+    nutrientPercent: z.number().min(0).max(100).optional(),
     batteryPercent: z.number().min(0).max(100).optional(),
     batteryVoltageV: z.number().min(0).optional(),
   })

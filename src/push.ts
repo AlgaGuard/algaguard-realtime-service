@@ -222,9 +222,7 @@ const thresholds = z
     temperatureC: thresholdBounds.optional(),
     ph: thresholdBounds.optional(),
     lightLux: thresholdBounds.optional(),
-    nitrateMgL: thresholdBounds.optional(),
-    phosphateMgL: thresholdBounds.optional(),
-    potassiumMgL: thresholdBounds.optional(),
+    nutrientPercent: thresholdBounds.optional(),
   })
   .strict();
 
@@ -433,9 +431,7 @@ const labels: Record<string, string> = {
   temperatureC: "temperature",
   ph: "pH",
   lightLux: "light intensity",
-  nitrateMgL: "nitrate",
-  phosphateMgL: "phosphate",
-  potassiumMgL: "potassium",
+  nutrientPercent: "nutrient",
 };
 
 export class ThresholdPushProcessor {
