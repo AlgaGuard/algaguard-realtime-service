@@ -4,14 +4,24 @@ import {
   createHash,
   randomBytes,
 } from "node:crypto";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { importPKCS8, SignJWT } from "jose";
 import { createClient, type RedisClientType } from "redis";
 import { z } from "zod";
+import * as grpc from "@grpc/grpc-js";
+import * as protoLoader from "@grpc/proto-loader";
 import type { SubscriptionAuthorizer } from "./access.js";
 import { serviceToken } from "./access.js";
+import {
+  createServiceTokenProvider,
+  metadataWithServiceToken,
+} from "./grpc-client.js";
 import type { AlertRepository } from "./alerts.js";
 import type { RealtimeMetrics } from "./domain.js";
 import type { TelemetryCommittedEvent } from "./events.js";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
 
 export interface PushRegistration {
   id: string;
@@ -246,6 +256,60 @@ export interface AlertProfileResolver {
     deviceId: string,
     organizationId: string,
   ): Promise<AlertProfile | undefined>;
+}
+
+export class GrpcProfileThresholdClient implements AlertProfileResolver {
+  private readonly client: any;
+  private readonly serviceToken: () => Promise<string>;
+
+  constructor(
+    address: string,
+    environment: NodeJS.ProcessEnv = process.env,
+    serviceToken = createServiceTokenProvider(environment),
+  ) {
+    const protoPath = path.resolve(
+      here,
+      "..",
+      "proto",
+      "profile_service.proto",
+    );
+    const packageDefinition = protoLoader.loadSync(protoPath, {
+      keepCase: false,
+      longs: String,
+      enums: Number,
+      defaults: true,
+      oneofs: true,
+      includeDirs: [path.dirname(protoPath)],
+    });
+    const proto = grpc.loadPackageDefinition(packageDefinition) as any;
+    this.serviceToken = serviceToken;
+    this.client = new proto.algaguard.profile.v1.ProfileLookupService(
+      address,
+      grpc.credentials.createInsecure(),
+    );
+  }
+
+  async resolve(deviceId: string, organizationId: string) {
+    const metadata = await metadataWithServiceToken(this.serviceToken);
+    const response = await new Promise<any>((resolve, reject) => {
+      this.client.getAlertProfile(
+        { deviceId, organizationId },
+        metadata,
+        (error: grpc.ServiceError, value: unknown) =>
+          error
+            ? error.code === grpc.status.NOT_FOUND
+              ? resolve(undefined)
+              : reject(error)
+            : resolve(value),
+      );
+    });
+    if (response === undefined) return undefined;
+    return alertProfile.parse({
+      profileId: response.profileId,
+      version: response.version,
+      configuration: JSON.parse(response.configurationJson),
+    });
+  }
 }
 
 export class ProfileThresholdClient implements AlertProfileResolver {

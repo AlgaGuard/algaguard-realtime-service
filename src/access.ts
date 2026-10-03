@@ -1,3 +1,28 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import * as grpc from "@grpc/grpc-js";
+import * as protoLoader from "@grpc/proto-loader";
+import {
+  createServiceTokenProvider,
+  metadataWithServiceToken,
+} from "./grpc-client.js";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const ACCESS_PROTO_PATH = path.resolve(
+  here,
+  "..",
+  "proto",
+  "access_service.proto",
+);
+const RESOURCE_TYPE_NUMBER: Record<
+  "organization" | "device" | "current-user",
+  number
+> = {
+  organization: 1,
+  device: 2,
+  "current-user": 6,
+};
+
 export type SubscriptionAuthorizer = (
   subjectId: string,
   resourceType: "organization" | "device" | "current-user",
@@ -57,5 +82,42 @@ export function createSubscriptionAuthorizer(
     if (!response.ok)
       throw new Error(`Access authorization failed with ${response.status}`);
     return Boolean(((await response.json()) as { allowed?: boolean }).allowed);
+  };
+}
+
+export function createGrpcSubscriptionAuthorizer(
+  address: string,
+  environment: NodeJS.ProcessEnv = process.env,
+  tokenProvider = createServiceTokenProvider(environment),
+): SubscriptionAuthorizer {
+  const packageDefinition = protoLoader.loadSync(ACCESS_PROTO_PATH, {
+    keepCase: false,
+    longs: String,
+    enums: Number,
+    defaults: true,
+    oneofs: true,
+    includeDirs: [path.dirname(ACCESS_PROTO_PATH)],
+  });
+  const proto = grpc.loadPackageDefinition(packageDefinition) as any;
+  const client = new proto.algaguard.access.v1.AuthorizationService(
+    address,
+    grpc.credentials.createInsecure(),
+  );
+  return async (subjectId, resourceType, resourceId) => {
+    const metadata = await metadataWithServiceToken(tokenProvider);
+    const response = await new Promise<any>((resolve, reject) => {
+      client.decide(
+        {
+          subjectId,
+          action: "subscription.read",
+          resourceType: RESOURCE_TYPE_NUMBER[resourceType],
+          ...(resourceId ? { resourceId } : {}),
+        },
+        metadata,
+        (error: grpc.ServiceError, value: unknown) =>
+          error ? reject(error) : resolve(value),
+      );
+    }).catch(() => undefined);
+    return Boolean(response?.allowed);
   };
 }
