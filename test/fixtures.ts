@@ -18,7 +18,12 @@ export const committedEvent = {
       observedAt: "2026-07-23T00:00:01Z",
       timestampQuality: "NTP_SYNCED" as const,
       uptimeMs: "1000",
-      values: { ph: 7 },
+      values: {
+        ph: 7,
+        nitrateMgL: 68.61,
+        phosphateMgL: 9.81,
+        potassiumMgL: 26.79,
+      },
     },
   },
   correlationId: "70000000-0000-4000-8000-000000000001",
