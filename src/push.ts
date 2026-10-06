@@ -233,6 +233,9 @@ const thresholds = z
     ph: thresholdBounds.optional(),
     lightLux: thresholdBounds.optional(),
     nutrientPercent: thresholdBounds.optional(),
+    nitrateMgL: thresholdBounds.optional(),
+    phosphateMgL: thresholdBounds.optional(),
+    potassiumMgL: thresholdBounds.optional(),
   })
   .strict();
 
@@ -401,7 +404,9 @@ export class FcmHttpV1Sender implements PushSender {
   async send(registrationToken: string, parameter: string) {
     return this.sendMessage(registrationToken, {
       title: "AlgaGuard threshold alert",
-      body: "A reading is outside the assigned algae profile range.",
+      body: estimatedParameters.has(parameter)
+        ? `The ${parameter} level is outside the assigned algae profile range. It is calculated from other readings, not measured.`
+        : "A reading is outside the assigned algae profile range.",
       data: { type: "THRESHOLD_ALERT", parameter },
     });
   }
@@ -496,7 +501,17 @@ const labels: Record<string, string> = {
   ph: "pH",
   lightLux: "light intensity",
   nutrientPercent: "nutrient",
+  nitrateMgL: "estimated nitrate",
+  phosphateMgL: "experimental phosphate estimate",
+  potassiumMgL: "experimental potassium estimate",
 };
+// Values the device calculates from pH and temperature rather than measures;
+// their push notifications say so.
+const estimatedParameters = new Set([
+  labels.nitrateMgL,
+  labels.phosphateMgL,
+  labels.potassiumMgL,
+]);
 
 export class ThresholdPushProcessor {
   constructor(

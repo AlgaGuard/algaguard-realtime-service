@@ -196,3 +196,57 @@ test("FCM startup configuration is disabled by default and fail-closed", async (
     }),
   );
 });
+
+test("an experimental nutrient estimate outside its threshold raises a labelled alert", async () => {
+  const profile: AlertProfileResolver = {
+    async resolve() {
+      return {
+        profileId: "70000000-0000-4000-8000-000000000001",
+        version: 1,
+        configuration: {
+          thresholds: {
+            nitrateMgL: { min: 5, max: 60 },
+            potassiumMgL: { min: 20, max: 35 },
+          },
+        },
+      };
+    },
+  };
+  const registrations = new MemoryPushRegistrationRepository();
+  await registrations.register({
+    subjectId: "owner",
+    installationId: "10000000-0000-4000-8000-000000000001",
+    registrationToken: "owner-".padEnd(64, "a"),
+  });
+  const pushed: string[] = [];
+  const alerts = new MemoryAlertRepository();
+  const processor = new ThresholdPushProcessor(
+    registrations,
+    profile,
+    async () => true,
+    {
+      async send(_token, parameter) {
+        pushed.push(parameter);
+        return "SENT";
+      },
+    },
+    new RealtimeMetrics(),
+    alerts,
+  );
+  const event = telemetryCommittedSchema.parse({
+    ...committedEvent,
+    payload: {
+      sample: {
+        ...committedEvent.payload.sample,
+        values: { ph: 7.1, nitrateMgL: 40, potassiumMgL: 38.2 },
+      },
+    },
+  });
+  await processor.process(event);
+  const recorded = await alerts.listByOrganization(event.organizationId, 10);
+  assert.deepEqual(
+    recorded.map((alert) => [alert.parameter, alert.direction]),
+    [["potassiumMgL", "HIGH"]],
+  );
+  assert.deepEqual(pushed, ["experimental potassium estimate"]);
+});
