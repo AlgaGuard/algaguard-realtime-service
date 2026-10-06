@@ -598,3 +598,28 @@ export class ThresholdPushProcessor {
     }
   }
 }
+
+// ThresholdPushProcessor de-duplicates on each parameter's state transition,
+// so running it again for the same event never sends a second push. Retrying
+// lets a briefly unavailable dependency (profile-service restarting, a Redis
+// blip) delay an alert instead of silently dropping it.
+export async function processAlertsWithRetry(
+  processor: Pick<ThresholdPushProcessor, "process">,
+  event: TelemetryCommittedEvent,
+  metrics: RealtimeMetrics,
+  retryDelaysMs: readonly number[] = [1_000, 5_000],
+) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await processor.process(event);
+      return true;
+    } catch {
+      const delay = retryDelaysMs[attempt];
+      if (delay === undefined) {
+        metrics.add("push_failures_total");
+        return false;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}

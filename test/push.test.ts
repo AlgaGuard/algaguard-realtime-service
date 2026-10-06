@@ -6,6 +6,7 @@ import { RealtimeMetrics } from "../src/domain.js";
 import { MemoryAlertRepository } from "../src/alerts.js";
 import {
   MemoryPushRegistrationRepository,
+  processAlertsWithRetry,
   ThresholdPushProcessor,
   type AlertProfileResolver,
   type PushSender,
@@ -249,4 +250,30 @@ test("an experimental nutrient estimate outside its threshold raises a labelled 
     [["potassiumMgL", "HIGH"]],
   );
   assert.deepEqual(pushed, ["experimental potassium estimate"]);
+});
+
+test("a failed alert check is retried instead of dropped", async () => {
+  const metrics = new RealtimeMetrics();
+  let calls = 0;
+  const flaky = {
+    async process() {
+      calls += 1;
+      if (calls < 3) throw new Error("profile-service unavailable");
+    },
+  };
+  const event = telemetryCommittedSchema.parse(committedEvent);
+  assert.equal(
+    await processAlertsWithRetry(flaky, event, metrics, [0, 0]),
+    true,
+  );
+  assert.equal(calls, 3);
+  assert.match(metrics.render(), /push_failures_total 0$/m);
+
+  const down = {
+    async process() {
+      throw new Error("still down");
+    },
+  };
+  assert.equal(await processAlertsWithRetry(down, event, metrics, [0]), false);
+  assert.match(metrics.render(), /push_failures_total 1$/m);
 });

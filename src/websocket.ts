@@ -11,7 +11,7 @@ import {
 } from "./domain.js";
 import type { TicketRepository } from "./tickets.js";
 import { telemetryCommittedSchema, toTelemetryUpdated } from "./events.js";
-import type { ThresholdPushProcessor } from "./push.js";
+import { processAlertsWithRetry, type ThresholdPushProcessor } from "./push.js";
 
 const eventType = z.enum([
   "telemetry.updated",
@@ -164,9 +164,11 @@ export async function attachRealtimeServer(
     }
     const event = toTelemetryUpdated(parsed.data);
     if (dependencies.alertProcessor) {
-      void dependencies.alertProcessor
-        .process(parsed.data)
-        .catch(() => dependencies.metrics.add("push_failures_total"));
+      void processAlertsWithRetry(
+        dependencies.alertProcessor,
+        parsed.data,
+        dependencies.metrics,
+      );
     }
     const encoded = JSON.stringify(event);
     void (async () => {
